@@ -228,8 +228,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         const csrf = csrfMatch[1];
         const sessionCookie = `_session_id=${sessionMatch[1]}`;
 
-        // Step 2: POST login
-        const postRes = await fetch("https://dme.parachutehealth.com/users/log_in.json", {
+        // Strategy A: JSON POST with X-CSRF-Token header
+        const postResA = await fetch("https://dme.parachutehealth.com/users/log_in.json", {
           method: "POST",
           redirect: "manual",
           headers: {
@@ -244,10 +244,109 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
           },
           body: JSON.stringify({ login: PARACHUTE_EMAIL, password: PARACHUTE_PASSWORD }),
         });
+        steps.push(`Strategy A (JSON+header): ${postResA.status} → ${(await postResA.text()).slice(0, 150)}`);
 
-        steps.push(`POST status: ${postRes.status}`);
-        const postBody = await postRes.text();
-        steps.push(`POST body: ${postBody.slice(0, 200)}`);
+        // GET a fresh session for strategy B
+        const getRes2 = await fetch("https://dme.parachutehealth.com/users/log_in", {
+          method: "GET",
+          redirect: "manual",
+          headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", Accept: "text/html" },
+        });
+        const html2 = await getRes2.text();
+        const csrf2 = html2.match(/name="csrf-token"\s+content="([^"]+)"/)?.[1] ?? "";
+        const sc2 = getRes2.headers.get("set-cookie");
+        const sid2 = sc2?.match(/_session_id=([^;]+)/)?.[1] ?? "";
+        const sessionCookie2 = `_session_id=${sid2}`;
+
+        // Strategy B: JSON POST with authenticity_token IN body
+        const postResB = await fetch("https://dme.parachutehealth.com/users/log_in.json", {
+          method: "POST",
+          redirect: "manual",
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Content-Type": "application/json",
+            Accept: "application/json, text/plain, */*",
+            "X-Requested-With": "XMLHttpRequest",
+            Origin: "https://dme.parachutehealth.com",
+            Referer: "https://dme.parachutehealth.com/users/log_in",
+            Cookie: sessionCookie2,
+          },
+          body: JSON.stringify({ login: PARACHUTE_EMAIL, password: PARACHUTE_PASSWORD, authenticity_token: csrf2 }),
+        });
+        steps.push(`Strategy B (JSON+body token): ${postResB.status} → ${(await postResB.text()).slice(0, 150)}`);
+
+        // GET a fresh session for strategy C
+        const getRes3 = await fetch("https://dme.parachutehealth.com/users/log_in", {
+          method: "GET",
+          redirect: "manual",
+          headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", Accept: "text/html" },
+        });
+        const html3 = await getRes3.text();
+        const csrf3 = html3.match(/name="csrf-token"\s+content="([^"]+)"/)?.[1] ?? "";
+        const sc3 = getRes3.headers.get("set-cookie");
+        const sid3 = sc3?.match(/_session_id=([^;]+)/)?.[1] ?? "";
+
+        // Strategy C: Form POST to /users/log_in (not .json)
+        const formBody = new URLSearchParams({
+          "login": PARACHUTE_EMAIL,
+          "password": PARACHUTE_PASSWORD,
+          "authenticity_token": csrf3,
+          "commit": "Log in",
+        });
+        const postResC = await fetch("https://dme.parachutehealth.com/users/log_in", {
+          method: "POST",
+          redirect: "manual",
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Content-Type": "application/x-www-form-urlencoded",
+            Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            Origin: "https://dme.parachutehealth.com",
+            Referer: "https://dme.parachutehealth.com/users/log_in",
+            Cookie: `_session_id=${sid3}`,
+          },
+          body: formBody.toString(),
+        });
+        steps.push(`Strategy C (form POST /log_in): ${postResC.status}`);
+        const postCHeaders = Object.fromEntries(postResC.headers.entries());
+        steps.push(`Strategy C headers: ${JSON.stringify(postCHeaders).slice(0, 200)}`);
+        const postCBody = await postResC.text();
+        steps.push(`Strategy C body length: ${postCBody.length}, snippet: ${postCBody.slice(0, 150)}`);
+
+        // Strategy D: user[email] / user[password] form fields (old Devise style) with fresh session
+        const getRes4 = await fetch("https://dme.parachutehealth.com/users/log_in", {
+          method: "GET",
+          redirect: "manual",
+          headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", Accept: "text/html" },
+        });
+        const html4 = await getRes4.text();
+        const csrf4 = html4.match(/name="csrf-token"\s+content="([^"]+)"/)?.[1] ?? "";
+        const sc4 = getRes4.headers.get("set-cookie");
+        const sid4 = sc4?.match(/_session_id=([^;]+)/)?.[1] ?? "";
+        const formBody2 = new URLSearchParams({
+          "user[email]": PARACHUTE_EMAIL,
+          "user[password]": PARACHUTE_PASSWORD,
+          "authenticity_token": csrf4,
+          "commit": "Log in",
+        });
+        const postResD = await fetch("https://dme.parachutehealth.com/users/log_in", {
+          method: "POST",
+          redirect: "manual",
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Content-Type": "application/x-www-form-urlencoded",
+            Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            Origin: "https://dme.parachutehealth.com",
+            Referer: "https://dme.parachutehealth.com/users/log_in",
+            Cookie: `_session_id=${sid4}`,
+          },
+          body: formBody2.toString(),
+        });
+        steps.push(`Strategy D (form user[email]): ${postResD.status}`);
+        if (postResD.status === 302 || postResD.status === 303) {
+          steps.push(`Strategy D redirect: ${postResD.headers.get("location")}`);
+        }
+        const postDBody = await postResD.text();
+        steps.push(`Strategy D body length: ${postDBody.length}, snippet: ${postDBody.slice(0, 150)}`);
       }
 
       sendJson(res, 200, { steps });
