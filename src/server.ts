@@ -31,12 +31,16 @@ const PARACHUTE_EMAIL = process.env.PARACHUTE_EMAIL ?? "";
 const PARACHUTE_PASSWORD = process.env.PARACHUTE_PASSWORD ?? "";
 const PARACHUTE_ORG_ID = process.env.PARACHUTE_ORG_ID ?? "";
 
+// Cookie-based auth: bypass programmatic login (which Parachute blocks from datacenter IPs).
+// Set PARACHUTE_SESSION_COOKIE to a raw cookie string from your browser.
+// Can also be injected at runtime via POST /api/set-cookie.
+let injectedCookie = process.env.PARACHUTE_SESSION_COOKIE ?? "";
+
 // ── Session management ──────────────────────────────────────────────────────
-// Re-login when the session expires (Devise cookies last ~2-4 hours).
 
 let cachedClient: ParachuteClient | null = null;
 let lastLoginAt = 0;
-const SESSION_TTL_MS = 90 * 60 * 1000; // re-login every 90 minutes to be safe
+const SESSION_TTL_MS = 90 * 60 * 1000; // re-login every 90 minutes
 
 async function getClient(): Promise<ParachuteClient> {
   const now = Date.now();
@@ -44,15 +48,35 @@ async function getClient(): Promise<ParachuteClient> {
     return cachedClient;
   }
 
-  console.log("[parachute] Logging in as", PARACHUTE_EMAIL);
-  cachedClient = await ParachuteClient.login({
-    email: PARACHUTE_EMAIL,
-    password: PARACHUTE_PASSWORD,
-    orgId: PARACHUTE_ORG_ID,
-  });
-  lastLoginAt = now;
-  console.log("[parachute] Login successful");
-  return cachedClient;
+  // Priority 1: Use injected browser cookie (bypasses bot-blocked login)
+  if (injectedCookie) {
+    console.log("[parachute] Using injected session cookie");
+    cachedClient = ParachuteClient.fromCookies({
+      cookie: injectedCookie,
+      orgId: PARACHUTE_ORG_ID,
+    });
+    lastLoginAt = now;
+    return cachedClient;
+  }
+
+  // Priority 2: Programmatic login (works from residential IPs, blocked from datacenters)
+  console.log("[parachute] Attempting programmatic login as", PARACHUTE_EMAIL);
+  try {
+    cachedClient = await ParachuteClient.login({
+      email: PARACHUTE_EMAIL,
+      password: PARACHUTE_PASSWORD,
+      orgId: PARACHUTE_ORG_ID,
+    });
+    lastLoginAt = now;
+    console.log("[parachute] Login successful");
+    return cachedClient;
+  } catch (e) {
+    console.error("[parachute] Programmatic login failed:", (e as Error).message);
+    throw new Error(
+      "Login failed. Parachute blocks datacenter IPs. " +
+      "Set PARACHUTE_SESSION_COOKIE env var or POST to /api/set-cookie with your browser cookie."
+    );
+  }
 }
 
 // ── Contact method determination ────────────────────────────────────────────
@@ -353,6 +377,28 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     } catch (e) {
       steps.push(`ERROR: ${(e as Error).message}`);
       sendJson(res, 200, { steps });
+    }
+    return;
+  }
+
+  // Set cookie endpoint — inject a browser session cookie at runtime
+  // POST /api/set-cookie  body: {"cookie": "_session_id=abc123; ..."}
+  if (url === "/api/set-cookie" && method === "POST") {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    try {
+      const { cookie } = JSON.parse(body);
+      if (!cookie || typeof cookie !== "string") {
+        sendJson(res, 400, { error: "Provide {\"cookie\": \"_session_id=...\"}" });
+        return;
+      }
+      injectedCookie = cookie;
+      cachedClient = null; // force re-init with new cookie
+      lastLoginAt = 0;
+      console.log("[parachute] Session cookie updated via API");
+      sendJson(res, 200, { ok: true, message: "Cookie set. Next lookup will use this session." });
+    } catch {
+      sendJson(res, 400, { error: "Invalid JSON body" });
     }
     return;
   }
