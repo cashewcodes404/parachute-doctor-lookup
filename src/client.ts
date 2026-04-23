@@ -134,17 +134,22 @@ export class ParachuteClient {
 
   /**
    * Log in programmatically with email/password.
-   * Handles the Devise CSRF flow:
-   *   1. GET /users/sign_in → extract CSRF token + session cookie
-   *   2. POST /users/sign_in → authenticate, capture session cookie
+   * Parachute Health uses a React SPA with JSON login:
+   *   1. GET /users/log_in → extract CSRF token from meta tag + session cookie
+   *   2. POST /users/log_in.json (JSON body) → authenticate, capture session cookie
+   *
+   * The React app uses axios with jQuery UJS CSRF injection:
+   *   - CSRF token comes from <meta name="csrf-token" content="...">
+   *   - Sent as X-CSRF-Token header (NOT in body)
+   *   - Field names are "login" and "password" (NOT user[email]/user[password])
    */
   static async login(creds: LoginCredentials): Promise<ParachuteClient> {
     const cookieJar = new Map<string, string>();
 
-    // Step 1: GET login page for CSRF token
+    // Step 1: GET login page for CSRF token + session cookie
     // Follow redirects manually to capture cookies from each hop
-    // (Parachute may redirect /users/sign_in → /users/log_in)
-    let currentUrl = `${BASE_URL}/users/sign_in`;
+    // (Parachute redirects /users/sign_in → /users/log_in)
+    let currentUrl = `${BASE_URL}/users/log_in`;
     let html = "";
     for (let hop = 0; hop < 5; hop++) {
       const res = await fetch(currentUrl, {
@@ -152,9 +157,20 @@ export class ParachuteClient {
         redirect: "manual",
         headers: {
           "User-Agent":
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-          Accept: "text/html",
-          ...(cookieJar.size > 0 ? { Cookie: cookieMapToString(cookieJar) } : {}),
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+          Accept:
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9",
+          "Accept-Encoding": "gzip, deflate, br",
+          Connection: "keep-alive",
+          "Sec-Fetch-Dest": "document",
+          "Sec-Fetch-Mode": "navigate",
+          "Sec-Fetch-Site": "none",
+          "Sec-Fetch-User": "?1",
+          "Upgrade-Insecure-Requests": "1",
+          ...(cookieJar.size > 0
+            ? { Cookie: cookieMapToString(cookieJar) }
+            : {}),
         },
       });
 
@@ -164,7 +180,6 @@ export class ParachuteClient {
       if (res.status >= 300 && res.status < 400) {
         const location = res.headers.get("location");
         if (!location) break;
-        // Resolve relative redirects
         currentUrl = location.startsWith("http")
           ? location
           : `${BASE_URL}${location}`;
@@ -176,10 +191,10 @@ export class ParachuteClient {
       break;
     }
 
-    // Extract CSRF token from meta tag or hidden input
-    const csrfMatch =
-      html.match(/name="csrf-token"\s+content="([^"]+)"/) ??
-      html.match(/name="authenticity_token".*?value="([^"]+)"/);
+    // Extract CSRF token from <meta name="csrf-token" content="...">
+    const csrfMatch = html.match(
+      /name="csrf-token"\s+content="([^"]+)"/
+    );
     if (!csrfMatch) {
       throw new Error(
         "Could not extract CSRF token from login page. The page structure may have changed."
@@ -187,38 +202,80 @@ export class ParachuteClient {
     }
     const csrfToken = csrfMatch[1];
 
-    // Step 2: POST login
-    const formBody = new URLSearchParams({
-      "user[email]": creds.email,
-      "user[password]": creds.password,
-      authenticity_token: csrfToken,
-      commit: "Log in",
-    });
-
-    // POST to the same URL we landed on (may be /users/log_in after redirect)
-    const loginPostUrl = currentUrl;
-    const loginRes = await fetch(loginPostUrl, {
+    // Step 2: POST JSON to /users/log_in.json
+    // Mirrors the React SPA's axios call with jQuery UJS CSRF injection
+    const loginRes = await fetch(`${BASE_URL}/users/log_in.json`, {
       method: "POST",
       redirect: "manual",
       headers: {
         "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-        "Content-Type": "application/x-www-form-urlencoded",
-        Accept: "text/html",
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Content-Type": "application/json",
+        Accept: "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "X-CSRF-Token": csrfToken,
+        "X-Requested-With": "XMLHttpRequest",
+        Origin: BASE_URL,
+        Referer: `${BASE_URL}/users/log_in`,
         Cookie: cookieMapToString(cookieJar),
-        Referer: loginPostUrl,
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
       },
-      body: formBody.toString(),
+      body: JSON.stringify({
+        login: creds.email,
+        password: creds.password,
+      }),
     });
 
     const setCookies2 = loginRes.headers.getSetCookie?.() ?? [];
     mergeSetCookies(cookieJar, setCookies2);
 
-    // Devise redirects on success (302), returns 200/422 on failure
-    if (loginRes.status !== 302 && loginRes.status !== 303) {
+    // On success the JSON endpoint returns 200 with user data (or 302 redirect)
+    // On failure it returns 401 with {"error":"...","type":"..."}
+    if (loginRes.status === 401 || loginRes.status === 422) {
+      const body = await loginRes.text();
       throw new Error(
-        `Login failed with status ${loginRes.status}. Check your email/password.`
+        `Login failed (${loginRes.status}): ${body}. Check your email/password.`
       );
+    }
+
+    // Accept 200 (JSON success), 302/303 (redirect after auth)
+    if (
+      loginRes.status !== 200 &&
+      loginRes.status !== 302 &&
+      loginRes.status !== 303
+    ) {
+      const body = await loginRes.text();
+      throw new Error(
+        `Login failed with unexpected status ${loginRes.status}: ${body}`
+      );
+    }
+
+    // If 302, follow the redirect to pick up any final cookies
+    if (loginRes.status === 302 || loginRes.status === 303) {
+      const location = loginRes.headers.get("location");
+      if (location) {
+        const redirectUrl = location.startsWith("http")
+          ? location
+          : `${BASE_URL}${location}`;
+        const followRes = await fetch(redirectUrl, {
+          method: "GET",
+          redirect: "manual",
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            Cookie: cookieMapToString(cookieJar),
+          },
+        });
+        const followCookies = followRes.headers.getSetCookie?.() ?? [];
+        mergeSetCookies(cookieJar, followCookies);
+        await followRes.text(); // drain
+      }
+    } else {
+      // 200 — drain the JSON body
+      await loginRes.text();
     }
 
     const client = new ParachuteClient(
