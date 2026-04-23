@@ -21,6 +21,7 @@
 
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { ParachuteClient, Doctor } from "./client.js";
+import { browserLogin } from "./browser-login.js";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -48,7 +49,7 @@ async function getClient(): Promise<ParachuteClient> {
     return cachedClient;
   }
 
-  // Priority 1: Use injected browser cookie (bypasses bot-blocked login)
+  // Priority 1: Use manually-injected cookie (env var or /api/set-cookie)
   if (injectedCookie) {
     console.log("[parachute] Using injected session cookie");
     cachedClient = ParachuteClient.fromCookies({
@@ -59,24 +60,42 @@ async function getClient(): Promise<ParachuteClient> {
     return cachedClient;
   }
 
-  // Priority 2: Programmatic login (works from residential IPs, blocked from datacenters)
-  console.log("[parachute] Attempting programmatic login as", PARACHUTE_EMAIL);
-  try {
-    cachedClient = await ParachuteClient.login({
-      email: PARACHUTE_EMAIL,
-      password: PARACHUTE_PASSWORD,
-      orgId: PARACHUTE_ORG_ID,
-    });
-    lastLoginAt = now;
-    console.log("[parachute] Login successful");
-    return cachedClient;
-  } catch (e) {
-    console.error("[parachute] Programmatic login failed:", (e as Error).message);
-    throw new Error(
-      "Login failed. Parachute blocks datacenter IPs. " +
-      "Set PARACHUTE_SESSION_COOKIE env var or POST to /api/set-cookie with your browser cookie."
-    );
+  // Priority 2: Puppeteer browser login (bypasses TLS fingerprinting / bot detection)
+  if (PARACHUTE_EMAIL && PARACHUTE_PASSWORD) {
+    console.log("[parachute] Attempting Puppeteer browser login as", PARACHUTE_EMAIL);
+    try {
+      const result = await browserLogin(PARACHUTE_EMAIL, PARACHUTE_PASSWORD);
+      console.log(`[parachute] Browser login successful (${result.durationMs}ms)`);
+      cachedClient = ParachuteClient.fromCookies({
+        cookie: result.cookie,
+        orgId: PARACHUTE_ORG_ID,
+      });
+      lastLoginAt = now;
+      return cachedClient;
+    } catch (e) {
+      console.error("[parachute] Browser login failed:", (e as Error).message);
+      // Fall through to programmatic login as last resort
+    }
+
+    // Priority 3: Programmatic fetch-based login (usually blocked from datacenters)
+    console.log("[parachute] Falling back to programmatic fetch login...");
+    try {
+      cachedClient = await ParachuteClient.login({
+        email: PARACHUTE_EMAIL,
+        password: PARACHUTE_PASSWORD,
+        orgId: PARACHUTE_ORG_ID,
+      });
+      lastLoginAt = now;
+      console.log("[parachute] Programmatic login successful");
+      return cachedClient;
+    } catch (e) {
+      console.error("[parachute] Programmatic login also failed:", (e as Error).message);
+    }
   }
+
+  throw new Error(
+    "All login methods failed. Set PARACHUTE_SESSION_COOKIE or POST to /api/set-cookie."
+  );
 }
 
 // ── Contact method determination ────────────────────────────────────────────

@@ -1,0 +1,6 @@
+node_modules
+dist
+.git
+*.md
+src/debug-login.ts
+src/test-login-here.ts
