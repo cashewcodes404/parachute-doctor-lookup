@@ -142,20 +142,39 @@ export class ParachuteClient {
     const cookieJar = new Map<string, string>();
 
     // Step 1: GET login page for CSRF token
-    const loginPageRes = await fetch(`${BASE_URL}/users/sign_in`, {
-      method: "GET",
-      redirect: "manual",
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-        Accept: "text/html",
-      },
-    });
+    // Follow redirects manually to capture cookies from each hop
+    // (Parachute may redirect /users/sign_in → /users/log_in)
+    let currentUrl = `${BASE_URL}/users/sign_in`;
+    let html = "";
+    for (let hop = 0; hop < 5; hop++) {
+      const res = await fetch(currentUrl, {
+        method: "GET",
+        redirect: "manual",
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+          Accept: "text/html",
+          ...(cookieJar.size > 0 ? { Cookie: cookieMapToString(cookieJar) } : {}),
+        },
+      });
 
-    const setCookies1 = loginPageRes.headers.getSetCookie?.() ?? [];
-    mergeSetCookies(cookieJar, setCookies1);
+      const hopCookies = res.headers.getSetCookie?.() ?? [];
+      mergeSetCookies(cookieJar, hopCookies);
 
-    const html = await loginPageRes.text();
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers.get("location");
+        if (!location) break;
+        // Resolve relative redirects
+        currentUrl = location.startsWith("http")
+          ? location
+          : `${BASE_URL}${location}`;
+        await res.text(); // drain body
+        continue;
+      }
+
+      html = await res.text();
+      break;
+    }
 
     // Extract CSRF token from meta tag or hidden input
     const csrfMatch =
@@ -176,7 +195,9 @@ export class ParachuteClient {
       commit: "Log in",
     });
 
-    const loginRes = await fetch(`${BASE_URL}/users/sign_in`, {
+    // POST to the same URL we landed on (may be /users/log_in after redirect)
+    const loginPostUrl = currentUrl;
+    const loginRes = await fetch(loginPostUrl, {
       method: "POST",
       redirect: "manual",
       headers: {
@@ -185,7 +206,7 @@ export class ParachuteClient {
         "Content-Type": "application/x-www-form-urlencoded",
         Accept: "text/html",
         Cookie: cookieMapToString(cookieJar),
-        Referer: `${BASE_URL}/users/sign_in`,
+        Referer: loginPostUrl,
       },
       body: formBody.toString(),
     });
