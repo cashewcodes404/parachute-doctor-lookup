@@ -9,7 +9,9 @@
   },
   "scripts": {
     "build": "tsc",
-    "start": "tsx src/cli.ts",
+    "start": "tsx src/server.ts",
+    "serve": "tsx src/server.ts",
+    "cli": "tsx src/cli.ts",
     "lookup": "tsx src/cli.ts",
     "test": "tsx src/cli.ts --help"
   },
