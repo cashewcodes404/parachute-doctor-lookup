@@ -177,7 +177,84 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
   // Health check
   if (url === "/health" || url === "/") {
-    sendJson(res, 200, { status: "ok", service: "parachute-doctor-lookup" });
+    sendJson(res, 200, { status: "ok", service: "parachute-doctor-lookup", nodeVersion: process.version });
+    return;
+  }
+
+  // Debug: test login flow step by step
+  if (url === "/debug/login-test") {
+    const steps: string[] = [];
+    try {
+      steps.push(`Node ${process.version}`);
+      steps.push(`Email configured: ${!!PARACHUTE_EMAIL}`);
+      steps.push(`Password configured: ${!!PARACHUTE_PASSWORD}`);
+      steps.push(`Org configured: ${!!PARACHUTE_ORG_ID}`);
+
+      // Step 1: GET login page
+      const getRes = await fetch("https://dme.parachutehealth.com/users/log_in", {
+        method: "GET",
+        redirect: "manual",
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+          Accept: "text/html",
+        },
+      });
+      steps.push(`GET status: ${getRes.status}`);
+
+      // Check getSetCookie availability
+      const hasGetSetCookie = typeof (getRes.headers as any).getSetCookie === "function";
+      steps.push(`getSetCookie available: ${hasGetSetCookie}`);
+
+      const rawSetCookie = getRes.headers.get("set-cookie");
+      steps.push(`Raw set-cookie header: ${rawSetCookie ? rawSetCookie.slice(0, 80) + "..." : "null"}`);
+
+      if (hasGetSetCookie) {
+        const cookies = (getRes.headers as any).getSetCookie();
+        steps.push(`getSetCookie() count: ${cookies.length}`);
+      }
+
+      const html = await getRes.text();
+      steps.push(`HTML length: ${html.length}`);
+
+      const csrfMatch = html.match(/name="csrf-token"\s+content="([^"]+)"/);
+      steps.push(`CSRF found: ${!!csrfMatch}`);
+      if (csrfMatch) steps.push(`CSRF length: ${csrfMatch[1].length}`);
+
+      // Extract session cookie manually
+      const sessionMatch = rawSetCookie?.match(/_session_id=([^;]+)/);
+      steps.push(`Session cookie found: ${!!sessionMatch}`);
+
+      if (csrfMatch && sessionMatch) {
+        const csrf = csrfMatch[1];
+        const sessionCookie = `_session_id=${sessionMatch[1]}`;
+
+        // Step 2: POST login
+        const postRes = await fetch("https://dme.parachutehealth.com/users/log_in.json", {
+          method: "POST",
+          redirect: "manual",
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Content-Type": "application/json",
+            Accept: "application/json, text/plain, */*",
+            "X-CSRF-Token": csrf,
+            "X-Requested-With": "XMLHttpRequest",
+            Origin: "https://dme.parachutehealth.com",
+            Referer: "https://dme.parachutehealth.com/users/log_in",
+            Cookie: sessionCookie,
+          },
+          body: JSON.stringify({ login: PARACHUTE_EMAIL, password: PARACHUTE_PASSWORD }),
+        });
+
+        steps.push(`POST status: ${postRes.status}`);
+        const postBody = await postRes.text();
+        steps.push(`POST body: ${postBody.slice(0, 200)}`);
+      }
+
+      sendJson(res, 200, { steps });
+    } catch (e) {
+      steps.push(`ERROR: ${(e as Error).message}`);
+      sendJson(res, 200, { steps });
+    }
     return;
   }
 

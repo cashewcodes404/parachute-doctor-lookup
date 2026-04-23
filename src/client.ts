@@ -86,6 +86,27 @@ export interface LoginCredentials {
 
 // ── Cookie jar helper ────────────────────────────────────────────────────────
 
+/**
+ * Extract Set-Cookie headers from a Response.
+ * `getSetCookie()` was added in Node 19.7 / undici — many Railway images
+ * run Node 18 where it doesn't exist.  Fall back to the raw `set-cookie`
+ * header (which concatenates multiple values with `, ` — but we split on
+ * `;` first so the `, ` inside a single cookie's attributes is harmless).
+ */
+function getSetCookieHeaders(res: Response): string[] {
+  // Preferred: getSetCookie returns each header separately
+  if (typeof (res.headers as any).getSetCookie === "function") {
+    return (res.headers as any).getSetCookie() as string[];
+  }
+  // Fallback: raw header string — may be multiple cookies concatenated
+  const raw = res.headers.get("set-cookie");
+  if (!raw) return [];
+  // Split on `, ` that is followed by a cookie-name=  (not inside expires= dates)
+  // Simple heuristic: split on `, ` then re-join entries that don't contain `=`
+  const parts = raw.split(/, (?=[A-Za-z_][A-Za-z0-9_-]*=)/);
+  return parts;
+}
+
 function mergeSetCookies(
   existing: Map<string, string>,
   setCookieHeaders: string[]
@@ -174,7 +195,7 @@ export class ParachuteClient {
         },
       });
 
-      const hopCookies = res.headers.getSetCookie?.() ?? [];
+      const hopCookies = getSetCookieHeaders(res);
       mergeSetCookies(cookieJar, hopCookies);
 
       if (res.status >= 300 && res.status < 400) {
@@ -229,7 +250,7 @@ export class ParachuteClient {
       }),
     });
 
-    const setCookies2 = loginRes.headers.getSetCookie?.() ?? [];
+    const setCookies2 = getSetCookieHeaders(loginRes);
     mergeSetCookies(cookieJar, setCookies2);
 
     // On success the JSON endpoint returns 200 with user data (or 302 redirect)
@@ -269,7 +290,7 @@ export class ParachuteClient {
             Cookie: cookieMapToString(cookieJar),
           },
         });
-        const followCookies = followRes.headers.getSetCookie?.() ?? [];
+        const followCookies = getSetCookieHeaders(followRes);
         mergeSetCookies(cookieJar, followCookies);
         await followRes.text(); // drain
       }
