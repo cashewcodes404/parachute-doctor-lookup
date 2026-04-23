@@ -92,9 +92,8 @@ export async function browserLogin(
 
     // Submit the form — click the submit button or press Enter
     console.log("[browser-login] Submitting form...");
-    const submitButton = await page.$(
-      'button[type="submit"], input[type="submit"], button:has-text("Log in"), button:has-text("Sign in")'
-    );
+    const submitButton = await page.$('button[type="submit"]')
+      ?? await page.$('input[type="submit"]');
 
     if (submitButton) {
       await Promise.all([
