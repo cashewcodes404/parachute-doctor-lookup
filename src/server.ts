@@ -224,19 +224,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
-  // Debug: test Puppeteer login
-  if (url === "/debug/puppeteer-test") {
-    try {
-      const result = await browserLogin(PARACHUTE_EMAIL, PARACHUTE_PASSWORD);
-      sendJson(res, 200, { ok: true, durationMs: result.durationMs, cookieLength: result.cookie.length, cookiePreview: result.cookie.slice(0, 80) });
-    } catch (e) {
-      sendJson(res, 200, { ok: false, error: (e as Error).message, stack: (e as Error).stack?.split("\n").slice(0, 5) });
-    }
-    return;
-  }
-
-  // Debug: test login flow step by step
-  if (url === "/debug/login-test") {
+  // Debug: test login flow step by step (gated behind env var)
+  if (url === "/debug/login-test" && process.env.ENABLE_DEBUG === "true") {
     const steps: string[] = [];
     try {
       steps.push(`Node ${process.version}`);
