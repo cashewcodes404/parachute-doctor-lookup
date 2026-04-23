@@ -1,0 +1,24 @@
+{
+  "name": "parachute-doctor-lookup",
+  "version": "1.0.0",
+  "description": "CLI and library for looking up doctor signature counts on Parachute Health DME",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "parachute-lookup": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "tsx src/cli.ts",
+    "lookup": "tsx src/cli.ts",
+    "test": "tsx src/cli.ts --help"
+  },
+  "keywords": ["parachute-health", "dme", "npi", "doctor-lookup"],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  }
+}
