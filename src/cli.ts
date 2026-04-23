@@ -146,17 +146,19 @@ function formatDoctor(doc: Doctor, index?: number): string {
   const prefix = index !== undefined ? `[${index + 1}] ` : "";
   const breakdown = doc.cache_signatures_counts;
   const methods = Object.entries(breakdown)
-    .filter(([, v]) => v > 0)
+    .filter(([, v]) => (v ?? 0) > 0)
     .map(([k, v]) => `${k}: ${v}`)
     .join(", ");
 
+  const cred = doc.credential ? `, ${doc.credential}` : "";
+
   return [
-    `${prefix}${doc.first_name} ${doc.last_name}, ${doc.credential}`,
+    `${prefix}${doc.first_name} ${doc.last_name}${cred}`,
     `    NPI:        ${doc.npi}`,
     `    Location:   ${doc.city}, ${doc.state} ${doc.zip}`,
     `    Practice:   ${doc.line1}`,
     `    PECOS:      ${doc.pecos_certified ? "Yes" : "No"}`,
-    `    Signatures: ${doc.signature_count} total${methods ? ` (${methods})` : ""}`,
+    `    Signed:     ${doc.signature_count} order(s)${methods ? ` (${methods})` : ""}`,
     `    Phone:      ${doc.phone_number || "N/A"}`,
     `    Fax:        ${doc.fax_number || "N/A"}`,
   ].join("\n");
@@ -281,16 +283,17 @@ async function main(): Promise<void> {
             .map(([k, v]) => `    ${k}: ${v}`)
             .join("\n");
 
-          console.log(`${result.doctor}, ${result.credential}`);
+          const cred = result.credential ? `, ${result.credential}` : "";
+          console.log(`${result.doctor}${cred}`);
           console.log(`NPI: ${result.npi}`);
-          console.log(`Total signatures: ${result.total}`);
+          console.log(`Signed orders: ${result.total}`);
           if (methods) {
             console.log(`Breakdown:\n${methods}`);
           }
         }
       }
     } else if (args.name) {
-      // Name search: returns multiple results
+      // Name search: returns multiple results, sorted by signature count
       const results = await client.searchDoctors(args.name);
 
       if (results.length === 0) {
@@ -298,14 +301,27 @@ async function main(): Promise<void> {
         process.exit(1);
       }
 
+      // Sort by signature count descending — most active doctors first
+      results.sort((a, b) => b.signature_count - a.signature_count);
+
       if (args.json) {
         console.log(JSON.stringify(results, null, 2));
       } else {
-        console.log(`Found ${results.length} result(s) for "${args.name}":\n`);
-        results.forEach((doc, i) => {
+        const active = results.filter((d) => d.signature_count > 0);
+        const inactive = results.filter((d) => d.signature_count === 0);
+
+        console.log(
+          `Found ${results.length} result(s) for "${args.name}" (${active.length} with signed orders):\n`
+        );
+        active.forEach((doc, i) => {
           console.log(formatDoctor(doc, i));
           console.log();
         });
+        if (inactive.length > 0) {
+          console.log(
+            `  ... plus ${inactive.length} doctor(s) with 0 signed orders (omitted)`
+          );
+        }
       }
     }
   } catch (e) {

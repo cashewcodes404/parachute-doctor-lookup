@@ -16,16 +16,33 @@ const BASE_URL = "https://dme.parachutehealth.com";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
+/** Signature breakdown by method. All fields optional — the API returns
+ *  a variable subset depending on the doctor's history. */
 export interface SignatureBreakdown {
-  fax: number;
-  sms: number;
-  epic: number;
-  email: number;
-  cerner: number;
-  onscreen: number;
-  self_sign: number;
-  fax_invite: number;
-  unknown_electronic: number;
+  fax?: number;
+  sms?: number;
+  epic?: number;
+  email?: number;
+  cerner?: number;
+  onscreen?: number;
+  self_sign?: number;
+  fax_invite?: number;
+  unknown_electronic?: number;
+}
+
+/** Normalize a raw breakdown from the API so every key is present (defaults to 0). */
+function normalizeBreakdown(raw: Record<string, number | undefined>): Required<SignatureBreakdown> {
+  return {
+    fax: raw.fax ?? 0,
+    sms: raw.sms ?? 0,
+    epic: raw.epic ?? 0,
+    email: raw.email ?? 0,
+    cerner: raw.cerner ?? 0,
+    onscreen: raw.onscreen ?? 0,
+    self_sign: raw.self_sign ?? 0,
+    fax_invite: raw.fax_invite ?? 0,
+    unknown_electronic: raw.unknown_electronic ?? 0,
+  };
 }
 
 export interface Doctor {
@@ -33,7 +50,7 @@ export interface Doctor {
   first_name: string;
   last_name: string;
   npi: string;
-  credential: string;
+  credential: string | null;
   line1: string;
   line2: string | null;
   city: string;
@@ -42,10 +59,10 @@ export interface Doctor {
   phone_number: string;
   masked_mobile_number: string | null;
   fax_number: string | null;
-  masked_email: string;
+  masked_email: string | null;
   pecos_certified: boolean;
   signature_count: number;
-  cache_signatures_counts: SignatureBreakdown;
+  cache_signatures_counts: Required<SignatureBreakdown>;
   clinical_organizations: string[];
 }
 
@@ -228,10 +245,19 @@ export class ParachuteClient {
    */
   async searchDoctors(term: string): Promise<Doctor[]> {
     const encoded = encodeURIComponent(term);
-    const data = await this.request<DoctorSearchResponse>(
+    const data = await this.request<{ results: Record<string, unknown>[] }>(
       `/u/doctors_search.json?term=${encoded}`
     );
-    return data.results;
+
+    // Normalize each result: fill missing breakdown fields, default nullable strings
+    return data.results.map((raw) => ({
+      ...raw,
+      credential: (raw.credential as string | null) ?? "",
+      masked_email: (raw.masked_email as string | null) ?? null,
+      cache_signatures_counts: normalizeBreakdown(
+        raw.cache_signatures_counts as Record<string, number | undefined>
+      ),
+    })) as Doctor[];
   }
 
   /**
@@ -256,7 +282,7 @@ export class ParachuteClient {
     npi: string;
     credential: string;
     total: number;
-    breakdown: SignatureBreakdown;
+    breakdown: Required<SignatureBreakdown>;
   } | null> {
     const doc = await this.lookupByNpi(npi);
     if (!doc) return null;
@@ -264,7 +290,7 @@ export class ParachuteClient {
     return {
       doctor: `${doc.first_name} ${doc.last_name}`,
       npi: doc.npi,
-      credential: doc.credential,
+      credential: doc.credential ?? "",
       total: doc.signature_count,
       breakdown: doc.cache_signatures_counts,
     };
@@ -289,7 +315,7 @@ export class ParachuteClient {
   ): Promise<{
     doctor: Doctor;
     signatureCount: number;
-    signatureBreakdown: SignatureBreakdown;
+    signatureBreakdown: Required<SignatureBreakdown>;
     dashboardOrderCount: number;
   } | null> {
     const doc = await this.lookupByNpi(npi);
