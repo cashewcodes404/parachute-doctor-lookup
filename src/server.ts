@@ -198,8 +198,15 @@ async function getDoctorContact(
 
 // ── HTTP server ─────────────────────────────────────────────────────────────
 
+const CORS_HEADERS: Record<string, string> = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Max-Age": "86400",
+};
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { "Content-Type": "application/json" });
+  res.writeHead(status, { "Content-Type": "application/json", ...CORS_HEADERS });
   res.end(JSON.stringify(body));
 }
 
@@ -217,6 +224,13 @@ function parseQuery(url: string): Record<string, string> {
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = req.url ?? "/";
   const method = req.method ?? "GET";
+
+  // CORS preflight
+  if (method === "OPTIONS") {
+    res.writeHead(204, CORS_HEADERS);
+    res.end();
+    return;
+  }
 
   // Health check
   if (url === "/health" || url === "/") {
@@ -418,6 +432,55 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendJson(res, 200, { ok: true, message: "Cookie set. Next lookup will use this session." });
     } catch {
       sendJson(res, 400, { error: "Invalid JSON body" });
+    }
+    return;
+  }
+
+  // Search endpoint — returns ALL matching doctors (for UI result lists)
+  // GET /api/search?term=<name or NPI>
+  if (url.startsWith("/api/search") && method === "GET") {
+    const query = parseQuery(url);
+    const term = (query.term ?? query.name ?? query.npi ?? "").trim();
+
+    if (!term) {
+      sendJson(res, 400, { error: "Missing required parameter: term" });
+      return;
+    }
+
+    console.log(`[parachute] Search request — term: ${term}`);
+
+    try {
+      let client = await getClient();
+      let results;
+      try {
+        results = await client.searchDoctors(term);
+      } catch (e) {
+        // Session expired → force re-login and retry once
+        if ((e as Error).message.includes("expired")) {
+          cachedClient = null;
+          client = await getClient();
+          results = await client.searchDoctors(term);
+        } else {
+          throw e;
+        }
+      }
+
+      // Most active doctors first
+      results.sort((a, b) => b.signature_count - a.signature_count);
+
+      sendJson(res, 200, {
+        term,
+        threshold: SIGNATURE_THRESHOLD,
+        count: results.length,
+        results: results.map((d) => ({
+          ...d,
+          doctor_contact:
+            d.signature_count > SIGNATURE_THRESHOLD ? "parachute" : "fax",
+        })),
+      });
+    } catch (e) {
+      console.error("[parachute] Search error:", (e as Error).message);
+      sendJson(res, 500, { error: "Search failed", message: (e as Error).message });
     }
     return;
   }
